@@ -1,0 +1,99 @@
+#Import dictionaries
+from quantopian.pipeline import Pipeline
+from quantopian.algorithm import attach_pipeline, pipeline_output
+from quantopian.pipeline.data.builtin import USEquityPricing
+from quantopian.pipeline.factors import AnnualizedVolatility
+from quantopian.pipeline.filters.morningstar import Q1500US
+
+#Create the pipeline
+def initialize(context):
+    
+    my_pipe = create_pipeline()
+    attach_pipeline(my_pipe, 'edge_pipeline')
+#Schedule the rebalance and record_vars functions.    
+    schedule_function(rebalance, date_rules.week_end(),time_rules.market_close())
+    
+    schedule_function(record_vars, date_rules.every_day(), time_rules.market_close())
+    
+def create_pipeline():
+    
+    #Set Base Universe to Q1500U
+    
+    environment_for_backtest= Q1500US()
+    
+    #Name vol5 and vol15 as the annualized volatility over 5 and 15 days.
+    vol5 = AnnualizedVolatility(inputs=[USEquityPricing.close],window_length = 5, mask=environment_for_backtest)
+    vol15 = AnnualizedVolatility(inputs= [USEquityPricing.close],window_length = 15, mask=environment_for_backtest)
+    
+   #Calculate the percentage.
+    percentage = (vol5 - vol15) / vol15 
+    
+    #These are securities we will buy (longs), and which we will sell (shorts).
+    longs = percentage.bottom(35)
+    
+    shorts = percentage.top(35)
+    
+    the_trades = (shorts | longs)
+    
+    return Pipeline(columns={'longs': longs, 'shorts':shorts},screen=(the_trades),)
+
+
+#Define how we compute the weights.
+def compute_weights(context):
+    
+    long_weight = 0.5 / len(context.longs)
+    short_weight = -0.5 / len(context.shorts)
+    #Output is the weighted longs and shorts.
+    return long_weight, short_weight
+    
+#These are the things we are doing before the market opens each day.
+def before_trading_start(context,data):
+#Get our pipeline every morning.    
+    context.output = pipeline_output('edge_pipeline')
+    
+#If the long value is true, buy
+    context.longs = context.output[context.output['longs']].index.tolist()
+    
+#If short value is true, sell.
+    context.shorts = context.output[context.output['shorts']].index.tolist()
+    
+#Essentially, we're now including these as weights
+    context.long_weight, context.short_weight = compute_weights(context)
+    
+    
+#Finally, we need to define the functions rebalance and record_vars. We do so here
+
+def rebalance(context, data):
+#Here, we use what I was taught is called a for loop. In this first part, if a security is neither long or short, we want none of it (which seems redudant, because obviously if it's not something we buy or sell, we don't have any).     
+    for security in context.portfolio.positions:
+        if security not in context.longs and security not in context.shorts and data.can_trade(security):
+            order_target_percent(security, 0)
+#Here, we order our target percentage of buys and sells (longs and shorts). 
+
+    for security in context.longs:
+        if data.can_trade(security):
+            order_target_percent(security, context.long_weight)
+            
+    for security in context.shorts:
+        if data.can_trade(security):
+            order_target_percent(security, context.short_weight)
+            
+def record_vars(context, data):
+#Record these variables.
+
+#Here, we start with longs and shorts counted at zero, and add +1 whenever we buy or sell.
+    longs = shorts = 0
+    for position in context.portfolio.positions.itervalues():
+        if position.amount > 0:
+            longs += 1
+        # The elif is like stating in every other case (since we only have longs and shorts). 
+        elif position.amount < 0:
+            shorts += 1
+            
+#Now that we've defined the way in which the count of longs and shorts is increased, we will record the longs and shorts.
+    record(leverage=context.account.leverage, long_count=longs, short_count=shorts)   
+    
+    
+    
+    
+    
